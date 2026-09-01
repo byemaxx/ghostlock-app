@@ -39,6 +39,7 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -94,6 +95,7 @@ public class MainActivity extends Activity {
     private static final int REQ_PICK_XBL = 1003;
     private static final String PREFS = "ghostlock_prefs";
     private static final String PREF_CPU_PAIR = "cpu_pair";
+    private static final String PREF_REPAIR_POLICY = "repair_policy";
     private static final String[] KSU_MANAGER_PACKAGES = {"me.weishu.kernelsu", "com.resukisu.resukisu", "com.kowx712.supermanager",};
     private static final int COLOR_RED = 0xFFFF6B6B;
     private static final int COLOR_GREEN = 0xFF5FD68A;
@@ -116,6 +118,8 @@ public class MainActivity extends Activity {
     private Button runButton;
     private ImageButton advancedButton;
     private LinearLayout advancedPanel;
+    private LinearLayout panelRepairRow;
+    private Switch panelRepairSwitch;
     private Button copyButton;
     private Button importButton;
     private Button otaButton;
@@ -477,6 +481,8 @@ public class MainActivity extends Activity {
         runButton = findViewById(R.id.runButton);
         advancedButton = findViewById(R.id.advancedButton);
         advancedPanel = findViewById(R.id.advancedPanel);
+        panelRepairRow = findViewById(R.id.panelRepairRow);
+        panelRepairSwitch = findViewById(R.id.panelRepairSwitch);
         copyButton = findViewById(R.id.copyButton);
         importButton = findViewById(R.id.importButton);
         otaButton = findViewById(R.id.otaButton);
@@ -492,6 +498,15 @@ public class MainActivity extends Activity {
         restoreCpuPair();
         applyKernelStatus();
         setRunState(RunState.IDLE);
+
+        panelRepairSwitch.setChecked(isRepairPolicyEnabled());
+        panelRepairSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
+            setRepairPolicyEnabled(isChecked);
+        });
+        panelRepairRow.setOnClickListener(v -> {
+            boolean newVal = !panelRepairSwitch.isChecked();
+            panelRepairSwitch.setChecked(newVal);
+        });
 
         runButton.setOnClickListener(v -> startExploit());
         advancedButton.setOnClickListener(v -> {
@@ -1334,13 +1349,32 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    private boolean isRepairPolicyEnabled() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_REPAIR_POLICY, true);
+    }
+
+    private void setRepairPolicyEnabled(boolean enabled) {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_REPAIR_POLICY, enabled)
+                .apply();
+        if (panelRepairSwitch != null && panelRepairSwitch.isChecked() != enabled) {
+            panelRepairSwitch.setChecked(enabled);
+        }
+        toast(enabled ? R.string.setting_fix_selinux_enabled : R.string.setting_fix_selinux_disabled);
+    }
+
     private int runBinary(File binary, File workDir) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder(binary.getAbsolutePath());
         pb.directory(workDir);
         pb.redirectErrorStream(true);
+        pb.environment().put("GHOSTLOCK_BIN", binary.getAbsolutePath());
         pb.environment().put("GHOSTLOCK_HOME", workDir.getAbsolutePath());
         pb.environment().put("TMPDIR", workDir.getAbsolutePath());
         pb.environment().put("HOME", workDir.getAbsolutePath());
+        boolean repairPolicy = isRepairPolicyEnabled();
+        pb.environment().put("GHOSTLOCK_REPAIR_POLICY", repairPolicy ? "1" : "0");
+        appendLog(repairPolicy ? "Policydb capability patch: enabled" : "Policydb capability patch: disabled (raw load_policy)");
         int[] pair = cpuPairs.get(cpuPairIndex);
         if (pair[0] != 0 || pair[1] != 1) {
             pb.environment().put("GHOSTLOCK_CORE", String.valueOf(pair[0]));

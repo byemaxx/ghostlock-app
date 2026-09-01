@@ -1,8 +1,7 @@
 [package]
 name = "ghostlock-extract"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.97.1"
+edition = "2021"
 description = "GhostLock kernel offset extractor"
 license = "Apache-2.0"
 

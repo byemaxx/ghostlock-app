@@ -43,4 +43,9 @@
     <string name="kernel_unsupported">不支持</string>
     <string name="support_label">支持</string>
     <string name="cpu_pair_label">CPU 核心对</string>
+    <string name="setting_fix_selinux_title">修补 Policydb 策略能力</string>
+    <string name="setting_fix_selinux_summary">载入前修补 Policydb 策略能力掩码（0xC0000000）并原子写入 /sys/fs/selinux/load，避免部分设备恢复策略时崩溃挂起；关闭则使用原生 load_policy 直接加载。</string>
+    <string name="setting_fix_selinux_short_summary">修补 0xC0000000 掩码；关闭则直接 load_policy</string>
+    <string name="setting_fix_selinux_enabled">已开启 Policydb 策略能力修补</string>
+    <string name="setting_fix_selinux_disabled">已关闭 Policydb 策略能力修补（使用原生 load_policy）</string>
 </resources>

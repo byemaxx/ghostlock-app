@@ -43,4 +43,9 @@
     <string name="kernel_unsupported">Not supported</string>
     <string name="support_label">Support</string>
     <string name="cpu_pair_label">CPU cores</string>
+    <string name="setting_fix_selinux_title">Policydb capability patch</string>
+    <string name="setting_fix_selinux_summary">Patch policydb capabilities (0xC0000000) and load directly via /sys/fs/selinux/load. When turned off, directly executes native load_policy.</string>
+    <string name="setting_fix_selinux_short_summary">Patch 0xC0000000 bitmask before load; off uses raw load_policy</string>
+    <string name="setting_fix_selinux_enabled">Policydb capability patch: enabled</string>
+    <string name="setting_fix_selinux_disabled">Policydb capability patch: disabled (raw load_policy)</string>
 </resources>

@@ -97,23 +97,3 @@ jobs:
           name: GhostLock-release
           path: GhostLock-release.apk
           archive: false
-
-  post_telegram:
-    needs: [build-apk]
-    runs-on: ubuntu-latest
-    if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.ref_type != 'tag' }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Post to Telegram
-        env:
-          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          BOT_API_LINK: ${{ secrets.BOT_API_LINK }}
-        run: bash .github/scripts/post_telegram.sh

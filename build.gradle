@@ -61,8 +61,18 @@ def extractNdkTools() {
 }
 
 tasks.register('buildGhostlockNative', Exec) {
+    def tools = extractNdkTools()
+    def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
     workingDir rootDir
-    commandLine 'make', 'ghostlock'
+    if (isWindows) {
+        commandLine tools.clang, '-O2', '-flto', '-Wall', '-Wno-unused-parameter', '-Wno-sign-compare', '-Wno-unused-function',
+                    '-Isrc/core', '-Isrc/kernels',
+                    '-fPIE', '-pie', '-pthread',
+                    'src/core/main.c', 'src/core/offsets_json.c', 'src/core/util.c', 'src/core/fops.c',
+                    '-o', 'ghostlock'
+    } else {
+        commandLine 'make', 'ghostlock'
+    }
     environment 'ANDROID_NDK_HOME', resolveNdkDir()
     environment 'NDK_ROOT', resolveNdkDir()
     inputs.files(
