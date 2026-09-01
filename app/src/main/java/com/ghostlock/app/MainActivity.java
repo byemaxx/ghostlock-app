@@ -1179,13 +1179,17 @@ public class MainActivity extends Activity {
 
     /**
      * Map an extractor exit code to the user-facing failure message.
-     * 3: pselect route infeasible, 4: missing required offsets, 5: kallsyms
-     * recovery failure; -1 means the process was killed on timeout.
+     * 3: pselect route infeasible, 
+     * 4: missing required offsets, 
+     * 5: kallsyms recovery failure, 
+     * 6: primitive already fixed,
+     * -1 means the process was killed on timeout.
      */
     private int parseFailureToast(int code) {
         return switch (code) {
             case 3, 4 -> R.string.parse_failed_route;
             case 5 -> R.string.parse_failed_kallsyms;
+            case 6 -> R.string.parse_failed_fixed;
             case -1 -> R.string.parse_timeout;
             default -> R.string.parse_failed;
         };
@@ -1344,7 +1348,7 @@ public class MainActivity extends Activity {
             }
         }
         if (!anyInstalled) {
-            appendLog("KernelSU/ReSukiSU app not installed");
+            appendLog("KernelSU/ReSukiSU/Kowsu app not installed");
         }
         return null;
     }
