@@ -162,6 +162,8 @@ void init_cpu_config(void);
 void disable_rseq_for_thread(void);
 void init_p0_profile(void);
 extern uint64_t p0_kernel_phys_load;
+/* Direct map end, from a rooted run's iomem dump or the target.h default. */
+extern uint64_t g_direct_map_end;
 extern uintptr_t g_init_cred_image;
 struct kernel_offsets;
 extern const struct kernel_offsets *active_offsets;
@@ -193,11 +195,13 @@ int prepare_skb_payload(uintptr_t base);
 uintptr_t prepare_kernel_page(void);
 uintptr_t prepare_good_kernel_page(void);
 
+void log_sync(void);
 void fdset_put_word(fd_set *set, int word, uint64_t value);
 uint64_t fdset_get_word(const fd_set *set, int word);
 int tcp_route_selected(void);
 void open_selected_fds(
     fd_set *in, fd_set *out, fd_set *ex, int read_fd, int write_fd);
+void reserve_standard_io(void);
 void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex);
 void do_pselect_fake_lock_route(void);
 void do_tcp_fake_lock_route(void);

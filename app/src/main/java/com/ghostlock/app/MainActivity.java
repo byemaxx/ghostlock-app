@@ -96,7 +96,8 @@ public class MainActivity extends Activity {
     private static final String PREFS = "ghostlock_prefs";
     private static final String PREF_CPU_PAIR = "cpu_pair";
     private static final String PREF_REPAIR_POLICY = "repair_policy";
-    private static final String[] KSU_MANAGER_PACKAGES = {"me.weishu.kernelsu", "com.resukisu.resukisu", "com.kowx712.supermanager",};
+    private static final String PREF_SAFE_MODE = "safe_mode";
+    private static final String[] KSU_MANAGER_PACKAGES = {"me.weishu.kernelsu.pr", "me.weishu.kernelsu", "com.resukisu.resukisu", "com.kowx712.supermanager",};
     private static final int COLOR_RED = 0xFFFF6B6B;
     private static final int COLOR_GREEN = 0xFF5FD68A;
     private static final int COLOR_YELLOW = 0xFFFFC94D;
@@ -120,6 +121,8 @@ public class MainActivity extends Activity {
     private LinearLayout advancedPanel;
     private LinearLayout panelRepairRow;
     private Switch panelRepairSwitch;
+    private LinearLayout panelSafeModeRow;
+    private Switch panelSafeModeSwitch;
     private Button copyButton;
     private Button importButton;
     private Button otaButton;
@@ -483,6 +486,8 @@ public class MainActivity extends Activity {
         advancedPanel = findViewById(R.id.advancedPanel);
         panelRepairRow = findViewById(R.id.panelRepairRow);
         panelRepairSwitch = findViewById(R.id.panelRepairSwitch);
+        panelSafeModeRow = findViewById(R.id.panelSafeModeRow);
+        panelSafeModeSwitch = findViewById(R.id.panelSafeModeSwitch);
         copyButton = findViewById(R.id.copyButton);
         importButton = findViewById(R.id.importButton);
         otaButton = findViewById(R.id.otaButton);
@@ -506,6 +511,15 @@ public class MainActivity extends Activity {
         panelRepairRow.setOnClickListener(v -> {
             boolean newVal = !panelRepairSwitch.isChecked();
             panelRepairSwitch.setChecked(newVal);
+        });
+
+        panelSafeModeSwitch.setChecked(isSafeModeEnabled());
+        panelSafeModeSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
+            setSafeModeEnabled(isChecked);
+        });
+        panelSafeModeRow.setOnClickListener(v -> {
+            boolean newVal = !panelSafeModeSwitch.isChecked();
+            panelSafeModeSwitch.setChecked(newVal);
         });
 
         runButton.setOnClickListener(v -> startExploit());
@@ -1368,6 +1382,21 @@ public class MainActivity extends Activity {
         toast(enabled ? R.string.setting_fix_selinux_enabled : R.string.setting_fix_selinux_disabled);
     }
 
+    private boolean isSafeModeEnabled() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_SAFE_MODE, false);
+    }
+
+    private void setSafeModeEnabled(boolean enabled) {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_SAFE_MODE, enabled)
+                .apply();
+        if (panelSafeModeSwitch != null && panelSafeModeSwitch.isChecked() != enabled) {
+            panelSafeModeSwitch.setChecked(enabled);
+        }
+        toast(enabled ? R.string.setting_safe_mode_enabled : R.string.setting_safe_mode_disabled);
+    }
+
     private int runBinary(File binary, File workDir) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder(binary.getAbsolutePath());
         pb.directory(workDir);
@@ -1379,6 +1408,11 @@ public class MainActivity extends Activity {
         boolean repairPolicy = isRepairPolicyEnabled();
         pb.environment().put("GHOSTLOCK_REPAIR_POLICY", repairPolicy ? "1" : "0");
         appendLog(repairPolicy ? "Policydb capability patch: enabled" : "Policydb capability patch: disabled (raw load_policy)");
+        boolean safeMode = isSafeModeEnabled();
+        if (safeMode) {
+            pb.environment().put("GHOSTLOCK_DISABLE_MODULES", "1");
+            appendLog("Safe mode: enabled (all modules disabled before ksud)");
+        }
         int[] pair = cpuPairs.get(cpuPairIndex);
         if (pair[0] != 0 || pair[1] != 1) {
             pb.environment().put("GHOSTLOCK_CORE", String.valueOf(pair[0]));

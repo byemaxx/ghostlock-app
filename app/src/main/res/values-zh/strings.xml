@@ -49,4 +49,8 @@
     <string name="setting_fix_selinux_short_summary">修补 0xC0000000 掩码；关闭则直接 load_policy</string>
     <string name="setting_fix_selinux_enabled">已开启 Policydb 策略能力修补</string>
     <string name="setting_fix_selinux_disabled">已关闭 Policydb 策略能力修补（使用原生 load_policy）</string>
+    <string name="safe_mode_label">安全模式</string>
+    <string name="safe_mode_summary">载入 ksud 前禁用 /data/adb/modules 下所有模块（用于救砖）</string>
+    <string name="setting_safe_mode_enabled">已开启安全模式（执行时禁用所有模块）</string>
+    <string name="setting_safe_mode_disabled">已关闭安全模式</string>
 </resources>

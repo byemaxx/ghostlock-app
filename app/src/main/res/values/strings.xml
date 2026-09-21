@@ -49,4 +49,8 @@
     <string name="setting_fix_selinux_short_summary">Patch 0xC0000000 bitmask before load; off uses raw load_policy</string>
     <string name="setting_fix_selinux_enabled">Policydb capability patch: enabled</string>
     <string name="setting_fix_selinux_disabled">Policydb capability patch: disabled (raw load_policy)</string>
+    <string name="safe_mode_label">Safe mode</string>
+    <string name="safe_mode_summary">Disable all modules under /data/adb/modules before executing ksud</string>
+    <string name="setting_safe_mode_enabled">Safe mode: enabled (all modules disabled)</string>
+    <string name="setting_safe_mode_disabled">Safe mode: disabled</string>
 </resources>

