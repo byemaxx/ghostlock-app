@@ -817,6 +817,8 @@ static void write_root_script(void) {
       "if grep -q \"^oplus_secure_guard_new \" /proc/modules 2>/dev/null; then\n"
       "  /system/bin/rmmod oplus_secure_guard_new >>\"$LOG\" 2>&1\n"
       "  echo \"[*] oplus_secure_guard_new: rmmod rc=$?\" >>\"$LOG\"\n"
+      "else\n"
+      "  echo \"[*] oplus_secure_guard_new: not loaded\" >>\"$LOG\"\n"
       "fi\n"
       "FIXUP_RC=1\n"
       "for i in $(seq 1 10); do\n"
